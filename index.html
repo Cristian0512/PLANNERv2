@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="ro">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0b0b0d">
+<link rel="manifest" href="manifest.json">
+<title>Cristian Planner</title>
+<style>
+:root{--bg:#f3f3f5;--card:#fff;--ink:#111;--muted:#74747b;--line:#e5e5e8;--accent:#111}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font-family:-apple-system,BlinkMacSystemFont,"SF Pro Display","Segoe UI",sans-serif}
+header{background:#0b0b0d;color:#fff;padding:18px 16px 14px;position:sticky;top:0;z-index:10}h1{margin:0;font-size:24px}.date{font-size:13px;opacity:.65;margin-top:4px}
+nav{position:sticky;top:72px;z-index:9;background:#fff;border-bottom:1px solid var(--line);display:flex;overflow:auto;padding:8px;gap:6px}nav button{border:0;border-radius:10px;padding:9px 12px;white-space:nowrap;background:#eee;color:#333}nav button.active{background:#111;color:#fff}
+main{max-width:760px;margin:auto;padding:12px 14px 90px}.card{background:var(--card);border-radius:17px;padding:15px;margin:10px 0;box-shadow:0 1px 5px #0000000b}.row{display:flex;align-items:center;justify-content:space-between;gap:10px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:9px}.muted{color:var(--muted);font-size:13px}.big{font-size:29px;font-weight:750;margin-top:3px}h2{font-size:18px;margin:0 0 10px}h3{margin:0 0 5px}
+button.primary{background:#111;color:#fff;border:0;border-radius:11px;padding:11px 14px;font-weight:650}button.secondary{background:#eee;color:#111;border:0;border-radius:11px;padding:10px 12px}button.danger{background:#fee;color:#a00;border:0;border-radius:10px;padding:9px}
+input,select,textarea{width:100%;border:1px solid #ddd;border-radius:10px;padding:11px;background:#fff;margin:4px 0 9px;font:inherit}label{font-size:12px;color:#666}
+.item{padding:10px 0;border-bottom:1px solid var(--line)}.item:last-child{border-bottom:0}.check{width:auto!important;margin:0 9px 0 0!important}.done{text-decoration:line-through;color:#999}
+.badge{display:inline-block;background:#eee;border-radius:8px;padding:4px 7px;font-size:11px;margin:2px}.shift{font-weight:700}.free{color:#888}.night{font-weight:700}
+.bar{height:8px;background:#e9e9ec;border-radius:99px;overflow:hidden}.bar>i{display:block;height:100%;background:#111}
+.stat{font-size:24px;font-weight:750}.split{display:flex;justify-content:space-between;gap:12px}.split>div{flex:1}
+#toast{position:fixed;bottom:22px;left:50%;transform:translateX(-50%);background:#111;color:#fff;padding:10px 14px;border-radius:12px;display:none;z-index:99;font-size:13px}
+</style>
+</head>
+<body>
+<header><h1>⚫ Cristian Planner</h1><div class="date" id="topDate"></div></header>
+<nav id="nav">
+<button data-tab="home" class="active">Acasă</button><button data-tab="calendar">Calendar</button><button data-tab="tasks">Task-uri</button><button data-tab="work">Pontaj</button><button data-tab="salary">Salariu</button><button data-tab="settings">Setări</button>
+</nav>
+<main id="app"></main><div id="toast"></div>
+<script>
+const KEY='cristian_planner_v2';
+const defaultState={
+ cycle:{anchor:'2026-10-01',anchorType:'NOAPTE',dayStart:'08:00',dayEnd:'20:00',nightStart:'20:00',nightEnd:'08:00'},
+ night:{start:'22:00',end:'06:00'}, weekendStart:5, weekendEnd:1,
+ tasks:[],events:[],work:[],projects:[],salary:{base:0,net:0}
+};
+let S=JSON.parse(localStorage.getItem(KEY)||'null')||defaultState;
+function save(){localStorage.setItem(KEY,JSON.stringify(S))}
+function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+function day(x){let d=new Date(x+'T12:00:00');return new Date(d.getFullYear(),d.getMonth(),d.getDate())}
+function iso(d){return d.toISOString().slice(0,10)}
+function fmtDate(d){return new Intl.DateTimeFormat('ro-RO',{weekday:'long',day:'numeric',month:'long'}).format(d)}
+function shiftFor(date){
+ let a=day(S.cycle.anchor),x=day(date),diff=Math.round((x-a)/86400000),r=((diff%4)+4)%4;
+ return S.cycle.anchorType==='ZI'?['ZI','LIBER','NOAPTE','LIBER'][r]:['NOAPTE','LIBER','LIBER','ZI'][r];
+}
+function shiftLabel(s){return s==='ZI'?`☀️ ZI ${S.cycle.dayStart}–${S.cycle.dayEnd}`:s==='NOAPTE'?`🌙 NOAPTE ${S.cycle.nightStart}–${S.cycle.nightEnd}`:'⚪ LIBER'}
+function isWeekendTime(dt){let d=dt.getDay();return d===5||d===6||d===0} // vineri/sâmbătă/duminică
+function diffHours(a,b){return Math.max(0,(b-a)/3600000)}
+function breakdown(start,end){
+ let cur=new Date(start), out={total:0,night:0,weekend:0,holiday:0,overtime:0};
+ while(cur<end){
+  let next=new Date(cur); next.setMinutes(next.getMinutes()+1);
+  let h=cur.getHours()+cur.getMinutes()/60;
+  let weekend=isWeekendTime(cur);
+  let night=(h>=22||h<6);
+  let mins=1/60; out.total+=mins;if(weekend)out.weekend+=mins;if(night)out.night+=mins;
+  cur=next;
+ }
+ return out;
+}
+function home(){
+ let t=iso(new Date()), sh=shiftFor(t), active=S.tasks.filter(x=>!x.done).sort((a,b)=>(a.due||'').localeCompare(b.due||''));
+ let todayWork=S.work.filter(x=>x.date===t);
+ let ev=S.events.filter(x=>x.date===t);
+ let p=S.projects.filter(x=>!x.done);
+ return `<div class="card"><div class="muted">ASTĂZI</div><div class="big">${shiftLabel(sh)}</div>
+ ${todayWork.length?`<div class="badge">Pontaj: ${todayWork.reduce((n,x)=>n+x.total,0).toFixed(2)}h</div>`:''}</div>
+ <div class="card"><div class="row"><h2>Live</h2><button class="primary" onclick="startStop()">${running()?'⏹ Oprește':'▶ Începe'}</button></div>
+ ${running()?`<div class="muted">Program început la ${new Date(running().start).toLocaleTimeString('ro-RO',{hour:'2-digit',minute:'2-digit'})}. Apasă Oprește când termini.</div>`:'<div class="muted">Pornește pontajul când începi efectiv munca.</div>'}</div>
+ <div class="card"><div class="row"><h2>Task-uri</h2><button class="primary" onclick="addTask()">+ Task</button></div>
+ ${active.slice(0,6).map(taskRow).join('')||'<div class="muted">Nicio sarcină activă.</div>'}</div>
+ <div class="card"><h2>Astăzi în calendar</h2>${ev.map(e=>`<div class="item"><b>${esc(e.time||'')}</b> ${esc(e.title)}<div class="muted">${esc(e.note)}</div></div>`).join('')||'<div class="muted">Nimic programat.</div>'}</div>
+ <div class="card"><h2>Proiecte</h2>${p.slice(0,4).map(projectRow).join('')||'<div class="muted">Niciun proiect activ.</div>'}</div>`;
+}
+function taskRow(t){return `<div class="item"><label><input class="check" type="checkbox" ${t.done?'checked':''} onchange="toggleTask('${t.id}')"><b class="${t.done?'done':''}">${esc(t.title)}</b></label><div class="muted">${t.due?'Deadline '+esc(t.due):''}${t.hours?' · '+esc(t.hours)+'h':''}</div></div>`}
+function projectRow(p){let pct=p.hours?Math.min(100,Math.round(p.doneHours/p.hours*100)):0;return `<div class="item"><b>${esc(p.name)}</b><div class="muted">${p.doneHours||0}/${p.hours||0}h · deadline ${esc(p.due||'-')}</div><div class="bar"><i style="width:${pct}%"></i></div></div>`}
+function calendar(){
+ let now=new Date(),y=now.getFullYear(),m=now.getMonth(),n=new Date(y,m+1,0).getDate(), rows='';
+ for(let i=1;i<=n;i++){let dt=new Date(y,m,i),d=iso(dt),sh=shiftFor(d),ev=S.events.filter(e=>e.date===d);rows+=`<div class="item"><b>${String(i).padStart(2,'0')}.${String(m+1).padStart(2,'0')}</b> — ${shiftLabel(sh)} ${ev.map(e=>`<span class="badge">${esc(e.title)}</span>`).join('')}</div>`}
+ return `<div class="card"><div class="row"><h2>Calendar</h2><button class="primary" onclick="addEvent()">+ Eveniment</button></div>${rows}</div>`;
+}
+function tasks(){
+ return `<div class="card"><div class="row"><h2>Task-uri</h2><button class="primary" onclick="addTask()">+ Task</button></div>${S.tasks.map(taskRow).join('')||'<div class="muted">Adaugă primul task.</div>'}</div>
+ <div class="card"><div class="row"><h2>Proiecte</h2><button class="primary" onclick="addProject()">+ Proiect</button></div>${S.projects.map(projectRow).join('')||'<div class="muted">Adaugă un proiect cu durată și deadline.</div>'}</div>`;
+}
+function work(){
+ let month=new Date(),y=month.getFullYear(),m=month.getMonth(),n=new Date(y,m+1,0).getDate();
+ let planned=0;for(let i=1;i<=n;i++)if(shiftFor(iso(new Date(y,m,i)))!=='LIBER')planned+=12;
+ let totals=S.work.reduce((a,x)=>{a.total+=x.total;a.night+=x.night;a.weekend+=x.weekend;a.overtime+=x.overtime;return a},{total:0,night:0,weekend:0,overtime:0});
+ return `<div class="card"><h2>Luna curentă</h2><div class="grid"><div><div class="stat">${planned}h</div><div class="muted">programate</div></div><div><div class="stat">${totals.total.toFixed(1)}h</div><div class="muted">pontate manual/live</div></div></div></div>
+ <div class="card"><h2>Defalcare pontaj</h2><div class="grid"><div><b>${totals.night.toFixed(1)}h</b><div class="muted">noapte</div></div><div><b>${totals.weekend.toFixed(1)}h</b><div class="muted">weekend</div></div><div><b>${totals.overtime.toFixed(1)}h</b><div class="muted">suplimentare</div></div></div></div>
+ <div class="card"><div class="row"><h2>Înregistrări</h2><button class="secondary" onclick="addManualWork()">+ Pontaj</button></div>${S.work.slice().reverse().map(x=>`<div class="item"><b>${x.date}</b> · ${x.total.toFixed(2)}h <span class="badge">noapte ${x.night.toFixed(2)}h</span><span class="badge">weekend ${x.weekend.toFixed(2)}h</span><span class="badge">supl. ${x.overtime.toFixed(2)}h</span></div>`).join('')||'<div class="muted">Niciun pontaj.</div>'}</div>`;
+}
+function salary(){
+ return `<div class="card"><h2>Simulator salarial — v1</h2><div class="muted">Motorul de calcul este pregătit pentru reguli reale; procentele sporurilor nu sunt inventate.</div>
+ <label>Salariu de bază</label><input id="base" type="number" value="${S.salary.base||''}">
+ <label>Net de pe ultimul fluturaș</label><input id="net" type="number" value="${S.salary.net||''}">
+ <button class="primary" onclick="saveSalary()">Salvează</button></div>
+ <div class="card"><h2>📸 Fluturaș + AI</h2><div class="muted">În următoarea versiune: fotografie → OCR → identificare automată a elementelor → confirmare → comparație cu pontajul și simularea. Nu încărcăm documente nicăieri în v1.</div><button class="secondary" onclick="alert('Modulul AI/OCR intră în v2. Baza de date și pontajul sunt deja separate pentru el.')">Pregătit pentru AI</button></div>`;
+}
+function settings(){
+ return `<div class="card"><h2>Program 12/24–12/48</h2><label>Data de referință</label><input id="anchor" type="date" value="${S.cycle.anchor}"><label>În acea zi ai avut</label><select id="atype"><option ${S.cycle.anchorType==='ZI'?'selected':''}>ZI</option><option ${S.cycle.anchorType==='NOAPTE'?'selected':''}>NOAPTE</option></select>
+ <div class="grid"><div><label>Zi start</label><input id="ds" value="${S.cycle.dayStart}"></div><div><label>Zi stop</label><input id="de" value="${S.cycle.dayEnd}"></div></div>
+ <div class="grid"><div><label>Noapte start</label><input id="ns" value="${S.cycle.nightStart}"></div><div><label>Noapte stop</label><input id="ne" value="${S.cycle.nightEnd}"></div></div>
+ <label>Interval noapte pentru calcul spor</label><div class="grid"><input id="nstart" value="${S.night.start}"><input id="nend" value="${S.night.end}"></div>
+ <button class="primary" onclick="saveSettings()">Salvează</button></div>
+ <div class="card"><h2>Backup</h2><button class="secondary" onclick="exportData()">Exportă datele</button> <button class="secondary" onclick="importData()">Importă</button></div>
+ <div class="card"><h2>Reset</h2><button class="danger" onclick="if(confirm('Ștergi toate datele?')){localStorage.removeItem(KEY);location.reload()}">Șterge tot</button></div>`;
+}
+function running(){return S.running||null}
+function startStop(){
+ if(running()){let r=S.running,end=new Date(),start=new Date(r.start),b=breakdown(start,end),scheduled=12;b.overtime=Math.max(0,b.total-scheduled);S.work.push({date:iso(start),start:r.start,end:end.toISOString(),...b});delete S.running;save();toast('Pontaj înregistrat');render('work')}
+ else{S.running={start:new Date().toISOString()};save();toast('Pontaj pornit');render('home')}
+}
+function addTask(){let title=prompt('Task:');if(!title)return;let due=prompt('Deadline AAAA-LL-ZZ (opțional):')||'';let hours=prompt('Durată estimată (ore):')||'';S.tasks.push({id:Date.now().toString(),title,due,hours,done:false});save();render('tasks')}
+function toggleTask(id){let t=S.tasks.find(x=>x.id===id);if(t){t.done=!t.done;save();render('tasks')}}
+function addProject(){let name=prompt('Numele proiectului:');if(!name)return;let hours=Number(prompt('Câte ore estimezi?')||0);let due=prompt('Deadline AAAA-LL-ZZ:')||'';S.projects.push({id:Date.now().toString(),name,hours,doneHours:0,due,done:false});save();render('tasks')}
+function addEvent(){let title=prompt('Eveniment:');if(!title)return;let date=prompt('Data AAAA-LL-ZZ:',iso(new Date()))||iso(new Date());let time=prompt('Ora (opțional):')||'';let note=prompt('Notiță (opțional):')||'';S.events.push({id:Date.now().toString(),title,date,time,note});save();render('calendar')}
+function addManualWork(){let date=prompt('Data AAAA-LL-ZZ:',iso(new Date()));if(!date)return;let st=prompt('Început HH:MM:','08:00');let en=prompt('Sfârșit HH:MM:','20:00');if(!st||!en)return;let a=new Date(date+'T'+st+':00'),b=new Date(date+'T'+en+':00');if(b<=a)b.setDate(b.getDate()+1);let x=breakdown(a,b);x.overtime=Math.max(0,x.total-12);S.work.push({date,start:a.toISOString(),end:b.toISOString(),...x});save();render('work')}
+function saveSettings(){S.cycle.anchor=document.getElementById('anchor').value;S.cycle.anchorType=document.getElementById('atype').value;S.cycle.dayStart=document.getElementById('ds').value;S.cycle.dayEnd=document.getElementById('de').value;S.cycle.nightStart=document.getElementById('ns').value;S.cycle.nightEnd=document.getElementById('ne').value;S.night.start=document.getElementById('nstart').value;S.night.end=document.getElementById('nend').value;save();render('calendar');toast('Program salvat')}
+function saveSalary(){S.salary.base=Number(document.getElementById('base').value||0);S.salary.net=Number(document.getElementById('net').value||0);save();toast('Salariu salvat')}
+function exportData(){let a=document.createElement('a');a.href='data:application/json,'+encodeURIComponent(JSON.stringify(S));a.download='cristian-planner-backup.json';a.click()}
+function importData(){let i=document.createElement('input');i.type='file';i.accept='.json';i.onchange=()=>{let r=new FileReader();r.onload=()=>{S=JSON.parse(r.result);save();location.reload()};r.readAsText(i.files[0])};i.click()}
+function toast(x){let t=document.getElementById('toast');t.textContent=x;t.style.display='block';setTimeout(()=>t.style.display='none',1600)}
+function render(tab='home'){document.querySelectorAll('nav button').forEach(b=>b.classList.toggle('active',b.dataset.tab===tab));document.getElementById('app').innerHTML=tab==='home'?home():tab==='calendar'?calendar():tab==='tasks'?tasks():tab==='work'?work():tab==='salary'?salary():settings();document.getElementById('topDate').textContent=fmtDate(new Date())}
+nav.onclick=e=>{if(e.target.dataset.tab)render(e.target.dataset.tab)}
+render();
+</script>
+</body></html>
